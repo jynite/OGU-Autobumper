@@ -1,0 +1,43 @@
+# Local settings and workspace files
+config.json
+config.json.*
+.env
+.env.*
+!.env.example
+!.env.sample
+.codex/
+.serena/
+
+# Runtime logs and browser artifacts
+logs/
+output/
+*.log
+*.jsonl
+*.jsonl.*
+*_dump.html
+failed_bump_page.html
+login_result.png
+bump_success.png
+
+# Python environments and caches
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+env/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+
+# Frontend dependencies and builds
+node_modules/
+frontend/dist/
+frontend/dist-ssr/
+
+# OS files
+.DS_Store
+Thumbs.db
+Desktop.ini

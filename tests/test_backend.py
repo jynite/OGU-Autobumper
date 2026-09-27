@@ -11,7 +11,7 @@ from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 from activity import ActivityLog, _ConsoleSink
-from autobumper_linux import create_app, run_browser_session
+from autobumper_linux import create_app, login_browser_session, run_browser_session
 
 
 CONFIG = {"username": "private-account", "password": "secret-password", "interval": 31,
@@ -330,8 +330,16 @@ class BrowserTests(unittest.TestCase):
 
     def driver(self, authenticated=True, post_buttons=True):
         from types import SimpleNamespace
+        submitted = []
+        login_button = SimpleNamespace(click=lambda: submitted.append(True))
+        def select(selector, wait=0):
+            if 'data-autobumper-login-submit' in selector:
+                return login_button
+            if 'logout' in selector:
+                return bool(submitted) and authenticated
+            return None
         driver = SimpleNamespace(get=lambda url: None, wait_for_element=lambda selector, wait: True,
-            run_js=lambda script: True, select=lambda selector: authenticated if "logout" in selector else None,
+            run_js=lambda script: 'filled' if script.startswith('const credentials = ') else True, select=select,
             select_all=lambda selector: [SimpleNamespace(click=lambda: None)] if "type='submit'" in selector or post_buttons else [])
         return driver
 
@@ -372,12 +380,52 @@ class BrowserTests(unittest.TestCase):
         runtime, entries = self.runtime()
         driver = self.driver(authenticated=False)
         scripts = []
-        driver.run_js = lambda script: scripts.append(script) or True
+        driver.run_js = lambda script: scripts.append(script) or ('filled' if script.startswith('const credentials = ') else True)
         config = CONFIG | {"username": 'PASSWORD_VALUE"; dangerous()', "password": "secret\nUSER_VALUE"}
         run_browser_session(driver, runtime, config)
-        line = scripts[0].splitlines()[0]
+        line = next(script for script in scripts if script.startswith('const credentials = ')).splitlines()[0]
         self.assertEqual(json.loads(line.removeprefix("const credentials = ").removesuffix(";")),
                          [config["username"], config["password"]])
+
+    def test_stop_during_login_verification_does_not_activate(self):
+        runtime, entries = self.runtime()
+        driver = self.driver(authenticated=False)
+        runtime.stop_event.wait = lambda seconds: setattr(runtime.stop_event, 'stopped', True) or True
+        self.assertEqual(run_browser_session(driver, runtime, CONFIG), 'stopped')
+        self.assertIn('login.submitted', entries)
+        self.assertNotIn('active', entries)
+        self.assertNotIn('thread.opening', entries)
+
+    def test_manual_verification_can_complete_after_submission(self):
+        runtime, entries = self.runtime()
+        driver = self.driver(authenticated=False)
+        original = driver.select
+        completed = []
+        def select(selector, wait=0):
+            if 'logout' in selector and completed:
+                return True
+            return original(selector, wait=wait)
+        driver.select = select
+        runtime.stop_event.wait = lambda seconds: completed.append(True) or False
+        self.assertEqual(login_browser_session(driver, runtime, CONFIG), 'authenticated')
+        self.assertIn('login.submitted', entries)
+        self.assertIn('login.verified', entries)
+        self.assertNotIn('thread.opening', entries)
+
+    def test_login_submit_failure_has_its_own_event_and_never_posts(self):
+        runtime, entries = self.runtime()
+        driver = self.driver(authenticated=False)
+        original = driver.select
+        def select(selector, wait=0):
+            if 'data-autobumper-login-submit' in selector:
+                from types import SimpleNamespace
+                return SimpleNamespace(click=lambda: (_ for _ in ()).throw(ValueError('secret-password')))
+            return original(selector, wait=wait)
+        driver.select = select
+        self.assertEqual(run_browser_session(driver, runtime, CONFIG), 'failed')
+        self.assertIn('login.submit_failed', entries)
+        self.assertNotIn('active', entries)
+        self.assertNotIn('thread.opening', entries)
 
 
 if __name__ == "__main__":

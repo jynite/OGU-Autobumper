@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Login regression fixture</title></head>
+<body>
+  <form id="search" action="/search.php" method="post">
+    <input name="keywords"><input type="submit" value="Search">
+  </form>
+  <div style="display:none">
+    <form id="quick-login" action="/member.php" method="post">
+      <input name="username"><input type="password" name="password">
+      <input type="submit" value="Login">
+    </form>
+  </div>
+  <form id="login" action="/member.php" method="post">
+    <input type="hidden" name="action" value="do_login">
+    <input type="hidden" name="my_post_key" value="fixture-token">
+    <input name="username" placeholder="Username">
+    <input type="password" name="password">
+    <input name="2facode">
+    <button>Login</button>
+  </form>
+  <script>
+    window.submissions = [];
+    for (const form of document.forms) form.addEventListener('submit', event => {
+      event.preventDefault();
+      window.submissions.push(form.id);
+      if (form.id === 'login' && !window.rejectLogin) {
+        const logout = document.createElement('a');
+        logout.href = '/member.php?action=logout';
+        logout.textContent = 'Log out';
+        document.body.appendChild(logout);
+      }
+    });
+  </script>
+</body>
+</html>

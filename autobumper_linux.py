@@ -223,54 +223,111 @@ def browser_worker(runtime, config):
     return task()
 
 
-def run_browser_session(driver, runtime, config):
+LOGIN_WAIT_SECONDS = 90
+LOGIN_FORM_SCRIPT = """
+    const visible = el => el && !el.disabled && el.getClientRects().length > 0
+        && getComputedStyle(el).visibility !== 'hidden';
+    const login = Array.from(document.forms).map(form => {
+        const user = Array.from(form.querySelectorAll("input[name='username'], input[placeholder*='Username']"))
+            .find(el => el.form === form && visible(el));
+        const pass = Array.from(form.querySelectorAll("input[name='password'], input[type='password']"))
+            .find(el => el.form === form && visible(el));
+        const submit = Array.from(form.querySelectorAll('button, input'))
+            .find(el => el.form === form && ['submit', 'image'].includes(el.type) && visible(el));
+        return {form, user, pass, submit};
+    }).find(candidate => candidate.user && candidate.pass);
+"""
+
+
+def authenticated(driver):
+    try:
+        return bool(driver.select("a[href*='action=logout']", wait=0))
+    except Exception:
+        # The document may be transitioning after a submit or manual verification.
+        return False
+
+
+def login_browser_session(driver, runtime, config):
+    """Authenticate without entering the posting loop; access checks remain manual."""
     stop = runtime.stop_event
     emit = runtime.emit
     if stop.is_set():
         return "stopped"
     driver.get("https://oguser.com/login")
     emit("INFO", "login.waiting", "Waiting for login controls. Access challenges require manual resolution.")
-    user_input = None
-    for _ in range(45):
+    ready = False
+    for _ in range(LOGIN_WAIT_SECONDS):
         if stop.is_set():
             return "stopped"
+        if authenticated(driver):
+            emit("INFO", "login.verified", "Authenticated session verified by the logout control.")
+            return "authenticated"
         try:
-            user_input = driver.wait_for_element("input[name='username'], input[placeholder*='Username']", wait=2)
-            if user_input:
+            ready = driver.run_js(LOGIN_FORM_SCRIPT + "return Boolean(login);")
+            if ready:
                 break
         except Exception:
-            continue
-    if not user_input:
-        emit("ERROR", "login.controls_missing", "Login controls did not become available within 90 seconds.")
+            pass
+        if stop.wait(1):
+            return "stopped"
+    if not ready:
+        emit("ERROR", "login.controls_missing", "A visible login form did not become available within 90 seconds.")
         return "failed"
     if stop.is_set():
         return "stopped"
     # JSON literals preserve quotes/newlines without allowing script injection.
     values = json.dumps([config["username"], config["password"]])
-    inserted = driver.run_js("const credentials = " + values + ";\n" + """
-        const user = document.querySelector("input[name='username'], input[placeholder*='Username']");
-        const pass = document.querySelector("input[name='password'], input[type='password']");
-        if (!user || !pass) return false;
-        user.value = credentials[0]; pass.value = credentials[1];
-        [user, pass].forEach(el => { el.dispatchEvent(new Event('input', {bubbles:true}));
-            el.dispatchEvent(new Event('change', {bubbles:true})); });
-        return true;
+    marker = uuid.uuid4().hex
+    try:
+        inserted = driver.run_js("const credentials = " + values + ";\n" + LOGIN_FORM_SCRIPT + """
+            if (!login) return 'controls_missing';
+            if (!login.submit) return 'submit_missing';
+            login.user.value = credentials[0]; login.pass.value = credentials[1];
+            [login.user, login.pass].forEach(el => {
+                el.dispatchEvent(new Event('input', {bubbles:true}));
+                el.dispatchEvent(new Event('change', {bubbles:true}));
+            });
+            login.submit.setAttribute('data-autobumper-login-submit', """ + json.dumps(marker) + """);
+            return 'filled';
         """)
-    if not inserted:
+    except Exception:
+        inserted = "controls_missing"
+    if inserted == "submit_missing":
+        emit("ERROR", "login.submit_missing", "No submit control was found inside the visible login form.")
+        return "failed"
+    if inserted != "filled":
         emit("ERROR", "login.fill_failed", "Login controls could not be filled.")
         return "failed"
-    candidates = driver.select_all("input[type='submit'], button[type='submit']")
-    if not candidates:
-        emit("ERROR", "login.submit_missing", "No login submit control was found.")
-        return "failed"
-    candidates[0].click()
-    if stop.wait(10):
+    if stop.is_set():
         return "stopped"
-    # A logout control is explicit evidence of an authenticated session.
-    if not driver.select("a[href*='action=logout']"):
-        emit("ERROR", "login.unverified", "Login could not be verified. Run stopped before attempting any replies.")
+    try:
+        submit = driver.select(f'[data-autobumper-login-submit="{marker}"]', wait=0)
+        if not submit:
+            emit("ERROR", "login.submit_missing", "The login form's submit control became unavailable.")
+            return "failed"
+        submit.click()
+    except Exception:
+        emit("ERROR", "login.submit_failed", "The login form could not be submitted. Check the open browser.")
         return "failed"
-    emit("INFO", "login.verified", "Authenticated session verified by the logout control.")
+    emit("INFO", "login.submitted", "Login form submitted. Complete any two-factor or access check in the open browser.")
+    for _ in range(LOGIN_WAIT_SECONDS):
+        if stop.is_set():
+            return "stopped"
+        if authenticated(driver):
+            emit("INFO", "login.verified", "Authenticated session verified by the logout control.")
+            return "authenticated"
+        if stop.wait(1):
+            return "stopped"
+    emit("ERROR", "login.unverified", "Login was not verified within 90 seconds. Check account details and complete any two-factor or access check. No replies were attempted.")
+    return "failed"
+
+
+def run_browser_session(driver, runtime, config):
+    result = login_browser_session(driver, runtime, config)
+    if result != "authenticated":
+        return result
+    stop = runtime.stop_event
+    emit = runtime.emit
     runtime.active()
     while not stop.is_set():
         live = runtime.store.load()

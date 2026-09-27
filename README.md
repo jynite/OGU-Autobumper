@@ -33,6 +33,8 @@ Start is disabled while changes are unsaved or required settings are missing. Yo
 
 Saved threads and intervals take effect next cycle. Stop and start again to use new account details.
 
+Login uses the visible account form. If OGU asks for a two-factor code or an access check, complete it in the Chrome window the bot opens. It waits up to 90 seconds for login confirmation before attempting any replies. **Stop** also works during this wait.
+
 A submit click is logged as **publication unconfirmed**. Check the forum to confirm the reply appeared. Stop can stay pending while a browser action finishes; server shutdown waits up to 10 seconds. If cleanup times out, close that run's browser window before restarting.
 
 ## What's stored on your PC
@@ -95,6 +97,8 @@ npm run build
 ```
 
 Tests use temporary files and simulated workers. They don't verify live forum login or published replies. See [frontend/README.md](frontend/README.md) for UI behavior and [FRONTEND_MAKEOVER.md](FRONTEND_MAKEOVER.md) for design and verification notes.
+
+The optional login-form regression uses local Chrome and a fixture with search and hidden login forms. Install `playwright`, set `OGU_BROWSER_TESTS=1`, then run the tests above to include it. It uses dummy credentials and doesn't contact OGU.
 
 ## Credits
 
